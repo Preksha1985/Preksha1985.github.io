@@ -1,0 +1,648 @@
+-- Introduction 
+/*
+---------------------------------------------------------------------------------------------------------------------------------
+ Module - Big Data Analytics - Assignment
+ Name - Preksha Tiwari
+ Instruction to set up the environment: Adding a JAR file and setting parameters of Hive for partitioning  
+ Purpose - The purpose of this assignment is to get a better understanding of the taxi system so that 
+           the city of New York can improve the efficiency of in-city commutes.
+---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+-- Steps to be followed 
+/* 
+---------------------------------------------------------------------------------------------------------------------------------
+   i) Created database "Preksha_hive" and used the same for further analysis.
+  ii) Created external table "TLC_data" inside  database to stored the data present in HDFS path '/common_folder/nyc_taxi_data/'.
+ iii) Performed Data quality check on datasets and found all the data quality issue. 
+  iv) Created partition table "TLC_data_partitioned" based on Year(2017) and Month(Nov and Dec) 
+      and location is '/user/hive/warehouse/Preksha_TLC_Partitioned'.
+   v) Insert records in partition table based on conditions
+  vi) Created ORC table "TLC_data_partitioned_orc" on location - '/user/hive/warehouse/Preksha_TLC_orc' 
+      and inserted data from partitioned table. 
+ vii) Performed assignment's analysis 
+----------------------------------------------------------------------------------------------------------------------------------
+*/
+ 
+-- Database creation ( in case the environment is same then database is already exists no need to run create database command )
+-----------------------------------------------------------------------------------------------------------------------------------
+create database Preksha_hive;
+use Preksha_hive;
+
+-- External table creation 
+---------------------------------------------------------------
+-- Dataset columns and datatypes are as below 
+/* 
+Sno |Column Name          | Data type                         
+ ---|-------------------- |-------------------------------------- 
+  1 |VendorID             | Int                            
+  2 |tpep_pickup_datetime | String                         
+  3 |tpep_dropoff_datetime| String                                       
+  4 |Passenger_count      | Int                              
+  5 |Trip_distance        | Double 
+  6 |PULocationID         | Int                
+  7 |DOLocationID         | Int                                      
+  8 |RateCodeID           | Int      
+  9 |Store_and_fwd_flag   | String                  
+  10|Payment_type         | Int  
+  11|Fare_amount          | Double                        
+  12|Extra                | Double             
+  13|MTA_tax              | Double      
+  14|Improvement_surcharge| Double
+  15|Tip_amount           | Double						  	
+  16|Tolls_amount         | Double         
+  17|Total_amount         | Double  					
+  --|--------------------------------------------------------------
+ */
+
+drop table Preksha_hive.TLC_data;
+create external table if not exists Preksha_hive.TLC_data
+(VendorID int,
+tpep_pickup_datetime string,
+tpep_dropoff_datetime string,
+passenger_count int,
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double ) 
+row format delimited fields terminated by ','
+location '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1");
+
+-- Checking the count in External table : 1174569
+------------------------------------------------------------------------------------------------------
+select count(*) from Preksha_hive.TLC_data;  
+
+-- Assumptions 
+-------------------------------------------------------------------------------------------------------
+/*
+1) VendorId should have only two distinct values 1 and 2.
+2) Pickup and drop date and time should be restricted to Nov'2017 and Dec'2017.
+3) Passenger_count should not be negative and has to be zero in case of cancelled trip.
+4) If the passenger_count is zero then trip_distance has to be zero and viceversa
+5) Trip distance should not be negative and has to be zero in case of cancelled trip.
+6) Pickup and drop location Ids should not be negative and zero.
+7) RateCode Id is within the valid values from 1 to 6 and records are treated as error records which having values other then these.
+8) Store and Frw flag should have values 'Y' and 'N' other than these are not valid records.
+9) Payment_Type should have values from 1 to 6 and other records are treated as error records which having values other then these.
+10) Fare_Amount,Extra,MTA_tax,Improvement_surcharge,Tip_amount,Tolls_amount and total_amount can't be negative.
+11) Fare_amount may or may not be applicable in case of cancelled trip.
+12) Extra should has valid values 0,0.50 and 1 and MTA_tax should have valid values as 0.5 and 0 and Improvement surcharge has 
+   valid values as 0.30 and 0 Records which having other than these values treated as error records
+13) Tip_amount should auto populated for payment_type 1 and should be zero for payment_type 2.
+14) Total_amount is sum of all other amount which can be zero in case of cancelled trip.
+15) Data quality checks are performed for month of Nov'2017 and Dec'2017.
+16) Analysis - I question Number 4 central tendency of tip_amount is 50 percentile.
+17) Analysis - II Question Number 4 here overall Avg is avg of both months (Nov and Dec).
+*/
+
+-- Basic Data Quality Check 
+----------------------------------------------------------------------------------------------------------------------------
+-- 1) How many records has each TPEP provider provided? Write a query that summarises the number of records of each provider.
+
+        select VendorID,
+               CASE WHEN VendorID = 1 THEN "Creative Mobile Technologies, LLC"
+                                   WHEN VendorID = 2 THEN "VeriFone Inc."
+                                   ELSE "NA" END Vendor_name,
+               count(VendorID) as no_of_trips 
+          from Preksha_hive.TLC_data
+          group by VendorID;
+          
+-- Output 
+/*  Here is the number of trip provided by each TPEP provider.
+
+                Vendor ID   |        Vendra Name                 | Number of trips
+             ---------------|------------------------------------|--------------------
+                    1       |  Creative Mobile Technologies, LLC | 527386
+                    2       |  VeriFone Inc                      | 647183
+*/
+-- 2) The data provided is for months November and December only. 
+ -- Check whether the data is consistent, and if not, identify the data quality issues. 
+
+--  Summary of data quality checks and observations of each column 
+/*
+ Sno|Column Name          | Data Quality Checks (For Nov & Dec'17)| Observations                       
+ ---|-------------------- |-------------------------------------- |------------------------------------------------------------------------------
+  1 |VendorID             | two valid values 1 & 2 and            |
+    |                     |  Not Null                             | No invalid data
+----|---------------------|---------------------------------------|-------------------------------------------------------------------------------                            
+  2 |tpep_pickup_datetime | Valid Values Nov'17 and Dec'17        | No Invalid data
+    |                     | Not Null                              |
+  3 |tpep_dropoff_datetime|                                       |
+----|---------------------|---------------------------------------|-------------------------------------------------------------------------------  
+  4 |Passenger_count      | Valid values are non negative and in  | There are some 6710 records where passenger_count is zero and trip_distance                           
+  5 |Trip_distance        | of cancelled trip zero is acceptable  | is greater than zero and 4114 records where passenger is greater than zero
+    |                     |                                       | and trip_distance is zero
+  --|---------------------|---------------------------------------|---------------------------------------------------------------------------------
+  6 |PULocationID         | Not Null  and Non zero                | No Invalid data
+  7 |DOLocationID         |                                       |
+  --|---------------------|---------------------------------------|----------------------------------------------------------
+  8 |RateCodeID           | valid values 1 to 6 and Not Null      |There are 9 records present in dataset which have ratecode as 99 
+   -|---------------------|---------------------------------------|-----------------------------------------------------------------
+  9 |Store_and_fwd_flag   | Valid Values Y and N                  | No unusual or erroneous data encountered.
+  --|---------------------|---------------------------------------|-----------------------------------------------------------------
+  10|Payment_type         | Valid Values are 1 to 6 and Not Null  | No unusual or erroneous data encountered.
+  --|---------------------|---------------------------------------|-----------------------------------------------------------------
+  11|Fare_amount          | valid values  >= 0  and in case of    | There are some 558 records which have amount in negative.
+    |                     | cancelled trip fare_amt may or maynot |
+	|					  | be applicable.                        |
+  --|---------------------|---------------------------------------|-----------------------------------------------------------------------------
+  12|Extra                | Valid Values 0,0.50 and 1             | There are some 286 records which having fare_amt and extra in (-)ve
+  --|---------------------|---------------------------------------|-----------------------------------------------------------------------------
+  13|MTA_tax              | Valid Values are 0,0.5                | There are some 548 records which having Taxs amount other than valid values
+  --|---------------------|---------------------------------------|------------------------------------------------------------------------------
+  14|Improvement_surcharge| Valid Values are 0,0.3                | There are some 562 records which having values other than valid ones
+  --|---------------------|---------------------------------------|-------------------------------------------------------------------------------
+  15|Tip_amount           | Valid Values are non negative and     | There are 4 records which having tip amount in negative
+    |                     | For payment type 2 (i.e.Cash) tip_amt |
+    |                     | not included						  |	
+  --|---------------------|---------------------------------------|--------------------------------------------------------------------------------
+  16|Tolls_amount         | Valid Values are non negative         | There are 3 reocrds which having toll amount in negative.
+  --|---------------------|---------------------------------------|--------------------------------------------------------------------------------
+  17|Total_amount         | Valid values are non negative and zero| There are some 558 where amt is in (-)ve and fare_amount is also (-)ve   
+    |                     | in case of cancelled trip where fare  |
+    |                     | amount and trip distance is also zero |						
+  --|-----------------------------------------------------------------------------------------------------------------------------------------------     
+ 
+*/
+
+-- Data quality checks for each columns
+-- A)Vendor Id 
+        select distinct(VendorID) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12);
+-- Output is two Distinct vendorID 1 and 2 for Nov'2017 and Dec'2017
+
+-- B) tpep_pickup_datetime and tpep_dropoff_datetime
+        select count(*) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+           and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+           and tpep_pickup_datetime is NULL OR tpep_dropoff_datetime is NULL; 
+-- Output is count is zero this means there are no NULL values in pickup and drop time for Month of Nov and Dec'17. 
+
+-- C) passenger_count and trip_distance 
+-- cancelled trip is where passenger_count is zero and trip_distance is zero and fare_amount may or maynot be applicable
+    select count(*) from Preksha_hive.TLC_data 
+     where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+       and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+       and nvl(passenger_count,0) = 0 
+       and NVL(trip_distance,-1) = 0 ;
+  -- Count is 110 which are valid cancelled records which having passenger count and trip distance as zero
+       select vendorid ,count(*) 
+	     from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and nvl(passenger_count,0) = 0 and nvl(trip_distance,-1) <> 0
+          group by vendorid;
+ --  vendor1 is having more number of error records which is 6710
+       select vendorid ,count(*) 
+	     from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and nvl(passenger_count,0) > 0 and nvl(trip_distance,-1) = 0
+          group by vendorid;
+ -- vendor1 is having more number of error records which are 4114          
+
+--D) trip_distance
+      select vendorid,count(trip_distance) 
+        from Preksha_hive.TLC_data 
+       where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+         and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+         and NVL(trip_distance,-1) < 0 
+         group by vendorid;
+-- output count is zero 
+
+-- E) PULocationID and DOLocationID
+      select count(*) 
+        from Preksha_hive.TLC_data 
+       where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+         and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+         and (PULocationID is NULL OR DOLocationID IS NULL);
+ -- Output Count is zero This means Pickup and Drop loaction id is not null for month of Nov and Dec'17
+      Select count(PULocationID) 
+        from Preksha_hive.TLC_data
+       where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+         and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+         AND PULocationID = 0;	
+      Select count(DOLocationID) 
+        from Preksha_hive.TLC_data
+       where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+         and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+         AND DOLocationID = 0; 
+-- Output Count is zero This means Pickupid and dropid is not zero for month of Nov and Dec'17	
+		 
+ --F) RatecodeID 
+       select VendorID,count(*) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and nvl(RatecodeID,0) not in (1,2,3,4,5,6)
+          group by VendorID;
+-- Output there are 9 records present in dataset which have ratecode as 99 that are error records and 
+-- 8 of them belongs to vendorId1
+
+-- G) Store_and_fwd_flag 
+       select count(Store_and_fwd_flag) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and Store_and_fwd_flag not in ('Y','N');
+ -- output count is zero
+ 
+ -- H) Payment_type 
+       select count(Payment_type) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and Payment_type not in (1,2,3,4,5,6);
+ -- output count is zero
+ 
+ -- I) fare_amount
+        select VendorId,count(fare_amount) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+           and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+           and NVL(fare_amount,-1) < 0 
+           group by vendorId;
+ -- output count is 558 which are need to filter out and all are belongs to VendorId 2
+ 
+ -- J) extra
+        select vendorId,count(extra) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+           and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+           and NVL(extra,-1) < 0
+           group by vendorId;
+     -- output count is 286 which are having fare_amount and extra in minus and out of that 285 belongs to vendorId 2 
+ 
+-- K) MTA_tax
+         select distinct(MTA_tax) 
+           from Preksha_hive.TLC_data 
+          where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+            and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12); 
+        select vendorid,count(*) 
+            from Preksha_hive.TLC_data 
+           where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+             and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+             and NVL(MTA_tax,-1) not in (0.5,0) 
+             group by Vendorid;
+    -- output count is 548 which are having other than valid values and out of that 547 belongs to vendorid2
+ 
+-- L) improvement_surcharge
+        select distinct(improvement_surcharge) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+           and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) ;
+        select VendorId,count(*) 
+          from Preksha_hive.TLC_data 
+         where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+           and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+           and NVL(improvement_surcharge,-1) not in (0.3,0)
+           group by vendorid;
+    -- output count is 562 which have other than valid values and all are belongs to VendorId2
+
+-- M) Tip_amount 
+       select Tip_amount 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+          and payment_type =2 and Tip_amount > 0;
+    -- output result count zero which shows for payment type cash there is no tip_amt included
+ 
+        select vendorId,count(*) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12) 
+          and NVL(Tip_amount,-1) < 0 
+          group by vendorId;
+    -- output result count is 4 which having tip_amt less than zero and belongs to vendorid 2
+
+--N) tolls_amount
+       select vendorid,count(*) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+          and tolls_amount < 0 ; 
+    -- output result count is 3 which having toll_amt in negative and belongs to vendorid 2
+    
+-- O) Total_amount 
+        select count(*) 
+         from Preksha_hive.TLC_data 
+        where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+          and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+          and Total_amount <= 0;
+ -- output count is 558 where amt is in (-)ve and fare_amount is also negative 
+ -- Output count is 123 where total amonut is zero 
+    select count(*) 
+      from Preksha_hive.TLC_data 
+     where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+       and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+       and Total_amount = 0
+       and fare_amount = 0 and trip_distance = 0;
+     -- Output count is 108 which are valid cancelled records.  
+
+-- Creation of partition table 
+-----------------------------------------------------------------------------------------------------
+drop table Preksha_hive.TLC_data_partitioned
+create external table if not exists Preksha_hive.TLC_data_partitioned
+(VendorID int,
+tpep_pickup_datetime string,
+tpep_dropoff_datetime string,
+passenger_count int,
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double) partitioned by (yr int, months int)
+location '/user/hive/warehouse/Preksha_TLC_Partitioned';
+
+-- Insert into Partition table 
+----------------------------------------------------------------------------------------------------------------
+insert overwrite table Preksha_hive.TLC_data_partitioned partition(yr,months)
+select VendorID,
+tpep_pickup_datetime,
+tpep_dropoff_datetime,
+passenger_count,
+trip_distance,
+RatecodeID,
+store_and_fwd_flag,
+PULocationID,
+DOLocationID,
+payment_type,
+fare_amount,
+extra,
+mta_tax,
+tip_amount,
+tolls_amount,
+improvement_surcharge,
+total_amount, YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) as yr,
+MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) as months
+from Preksha_hive.TLC_data
+where YEAR(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 2017
+  and MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) in (11,12)
+  and ((nvl(passenger_count,0) = 0 and NVL(trip_distance,-1) = 0 and NVL(fare_amount,0) >= 0) OR ( nvl(passenger_count,0) > 0 and NVL(trip_distance,-1) > 0 and NVL(fare_amount,0) > 0)) 
+  and RatecodeID in (1,2,3,4,5,6) 
+  and NVL(MTA_tax,-1) in (0.5,0) 
+  and NVL(extra,-1) in (0,0.50,1)
+  and NVL(improvement_surcharge,-1) in (0.3,0); 
+  
+-- Checking the data count in Partition Table 
+---------------------------------------------------------------------------------------------------------------------------------
+select count(*) from Preksha_hive.TLC_data_partitioned; -- 1155524
+
+ --3)  You might have encountered unusual or erroneous rows in the dataset. 
+ -- Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? 
+ select VendorID,
+               CASE WHEN VendorID = 1 THEN "Creative Mobile Technologies, LLC"
+                                   WHEN VendorID = 2 THEN "VeriFone Inc."
+                                   ELSE "NA" END Vendor_name,
+               count(VendorID) as no_of_trips 
+          from Preksha_hive.TLC_data_partitioned
+          group by VendorID;
+          
+-- Output 
+/*  Here is the number of trip rovided by each TPEP provider.
+  So we can conclude that the vendorId1 (Creative Mobile Technologies, LLC) is doing a bad job in providing details in different columns
+  Because before data cleanup vendorId1 has 527386 records and vendor 2 has 640854
+  and after cleanup vendor1 has 514670 records and vendor2 has 640854  
+
+                Vendor ID   |        Vendra Name                 | Number of trips
+             ---------------|------------------------------------|--------------------
+                    1       |  Creative Mobile Technologies, LLC | 527386
+                    2       |  VeriFone Inc                      | 647183
+*/
+
+ -- ORC table creation 
+ --------------------------------------------------------------------------------------------------------------------------
+ drop table  Preksha_hive.TLC_data_partitioned_orc
+ create external table if not exists Preksha_hive.TLC_data_partitioned_orc
+(VendorID int,
+tpep_pickup_datetime string,
+tpep_dropoff_datetime string,
+passenger_count int,
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double) partitioned by (yr int, months int)
+stored as orc location '/user/hive/warehouse/Preksha_TLC_orc'
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Insert into ORC table 
+-------------------------------------------------------------------------------------------------------------------------------------
+insert overwrite table Preksha_hive.TLC_data_partitioned_orc partition(yr , months)
+select * from Preksha_hive.TLC_data_partitioned;
+
+select count(*) from TLC_data_partitioned_orc; -- 1155524 
+
+------------------------------------------------------------------------------------------------------------------------------------- 
+ -- Analysis-I
+-------------------------------------------------------------------------------------------------------------------------------------
+ -- 1) Compare the overall average fare per trip for November and December.
+
+  Select Months,avg(Fare_amount) as Avg_Fare_Amt 
+    from TLC_data_partitioned_orc
+   group by months;
+   
+-- Output 
+   /*  
+    Average fare amount is almost equal for both the months Nov. and Dec.
+                |----------|--------------------|      
+                |  Month   |  Avg Fare Amount   |
+                |----------|------------------- |
+                |    Nov   |  12.91             |
+                |    Dec   |  12.70             |
+                |----------|--------------------| 
+   */
+  -- 2) Explore the ‘number of passengers per trip’ - how many trips are made by each level of ‘Passenger_count’? 
+  --    Do most people travel solo or with other people?
+
+     select Passenger_count,count(*) as Number_of_passengers_per_trip from TLC_data_partitioned_orc
+     group by Passenger_count;
+
+ -- Output 
+   /* After analysis , we can say most of the people prefer travel solo.
+ 
+                  Passenger Count | Number of Passenger
+                  --------------- | -------------------
+                    0             |    102
+                    1             |    818468
+                    2             |    174980
+                    3             |    50236
+                    4             |    24704
+                    5             |    54111
+                    6             |    32920
+                    7             |    3
+   */
+ 
+ --3) Which is the most preferred mode of payment?
+ 
+         Select Payment_type ,CASE WHEN Payment_type = 1 THEN "Credit card"
+                                   WHEN Payment_type = 2 THEN "Cash"
+                                   WHEN Payment_type = 3 THEN "No charge"
+                                   WHEN Payment_type = 4 THEN "Dispute"
+                                   WHEN Payment_type = 5 THEN "Unknown"
+                                   WHEN Payment_type = 6 THEN "Voided trip"
+                                   ELSE "NA" END Payment_type_desc,
+                count(Payment_type) as count
+         From TLC_data_partitioned_orc
+         Group By Payment_type;
+        
+   --  Output 
+    /* After analysis , we can say most preferred mode of payment is "Credit Card" 
+ 
+                   Payment Type   | Payment Type Description | Count
+                  ----------------| -------------------------|---------
+                    1             |   Credit Card            | 779839
+                    2             |   Cash                   | 369597
+                    3             |   No Charge              | 4767
+                    4             |   Dispute                | 1321
+                   
+   */
+   
+  --4) What is the average tip paid per trip? Compare the average tip with the 25th, 50th and 75th percentiles and 
+  -- comment whether the ‘average tip’ is a representative statistic (of the central tendency) of ‘tip amount paid’. 
+  
+        Select avg(Tip_amount) as avg_tip_amount,
+             percentile_approx(tip_amount,0.25) as Percentile_25,
+             percentile_approx(tip_amount,0.50) as percentile_50, 
+             percentile_approx(tip_amount,0.75) as percentile_75
+        From TLC_data_partitioned_orc;
+    
+    -- Output
+    /* Here, central tendency of tip_amount i.e.50th Percentile is 1.36 and Avg value of tip_amount is 1.83 
+    which are not that close enough So, we can't say that mean value of tip_amount is a representative statistic of tip_paid.
+    
+              Avg Tip_Amount | 25 Percentile | 50 Percentile | 75 Percentile |
+            -----------------|---------------|---------------|---------------|
+               1.83          | 0             | 1.36          | 2.45          |
+              
+    */  
+    
+ --5) Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+
+      select count(case when extra >= 0 then 1 end)/ count(*) extra_charge_fraction
+        from TLC_data_partitioned_orc;  
+    
+    -- Output Fraction of total trips have an extra charge is levied is 0.46 (~46%) 
+        
+------------------------------------------------------------------------------------------------------------------------------------
+ -- Analysis - II
+ --------------------------------------------------------------------------------------------------------------------------------
+ -- 1) What is the correlation between the number of passengers on any given trip, 
+ -- and the tip paid per trip? Do multiple travellers tip more compared to solo travellers?
+     
+     select corr(Passenger_count,tip_amount) 
+       from TLC_data_partitioned_orc;
+
+ -- Output        
+  /* correlation - -0.005
+     used Corr function to correclate between passenger_count and tip_amount.
+     and found very weak negative correlaction,This mean we can't directly co-relate these two datapoint but
+     all we can say if number of passenger count is increased tip_amount is decresed and vice versa.
+     So in order to answer the question solo traveller tip more as compared to Multiple travellers.
+  */
+  
+ -- 2) Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. 
+ --    Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+  
+      select count(case when tip_amount >=0 and tip_amount < 5 then 1 end)/ count(*) bucket1,
+             count(case when tip_amount >=5 and tip_amount < 10 then 1 end)/ count(*) bucket2,
+             count(case when tip_amount >=10 and tip_amount < 15 then 1 end)/ count(*) bucket3,
+             count(case when tip_amount >=15 and tip_amount < 20 then 1 end)/ count(*) bucket4,
+             count(case when tip_amount >=20 then 1 end)/ count(*) bucket5
+        from TLC_data_partitioned_orc;
+  -- Output 
+  /*
+    |----------------------------------------------------------------------------------------|
+    |  Bucket             | Bucket1    | Bucket2     | Bucket3      | Bucket4      | Bucket5 |
+    |  Tip_amount ranges  | >=0 and <5 | >=5 and <10 | >=10 and <15 | >=15 and <20 | >=20    |
+    |  Fraction of trips  | 0.9239     | 0.0564      | 0.0170       | 0.0019       | 0.0009  |
+    |  % share of buckets | 92.39      | 05.64       | 01.70        | 0.19         | 0.09    |
+    |_---------------------------------------------------------------------------------------|
+  */
+  
+  -- 3) Which month has a greater average ‘speed’ - November or December? 
+    /*  
+     select tpep_dropoff_datetime,tpep_pickup_datetime,trip_distance, 
+           ((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600) as time_diff ,
+           (Trip_distance /((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) as Speed 
+       from TLC_data_partitioned_orc
+    */
+      select months,
+             avg((Trip_distance /((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600))) as avg_speed
+        from TLC_data_partitioned_orc
+    group by months;
+ 
+ -- Output 
+  /*      
+    Speed is equal to the distance travelled divided by time.Time is in seconds to divided by 3600 to get the value in hrs.
+    So Month of Dec and Nov have almost same Avg speed. Dec has slightly greater(~0.1 mph) avg speed (miles/hr) as compared to November.
+                |----------|--------------|
+                |    Month |  Avg Speed   |
+                |----------|--------------|
+                |    Nov   |  10.96  mph  |
+                |    Dec   |  11.06  mph  |
+                |----------|--------------| 
+  */     
+     
+ -- 4) Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) 
+ --     and 25th December (Christmas) and compare it with the overall average. 
+    
+     -- Select query for 31st Dec 
+      select avg((Trip_distance /((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600))) as avg_speed 
+        from TLC_data_partitioned_orc
+       where MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 12
+         and day(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 31;
+     -- select query for 25th Dec
+      select avg((Trip_distance /((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600))) as avg_speed 
+        from TLC_data_partitioned_orc
+       where MONTH(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 12
+         and day(from_unixtime(unix_timestamp(tpep_pickup_datetime))) = 25;
+    -- Compare avg speeds of both days to the overall avg     
+      select avg((Trip_distance /((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600))) as avg_speed
+        from TLC_data_partitioned_orc;
+   -- Output 
+  /*      
+    Speed is equal to the distance travelled divided by time.Time is in seconds to divided by 3600 to get the value in hrs.
+    So, the most happening days of the year, i.e. 31st December (New year’s eve) and 25th December (Christmas) both have avg speed
+    more than tha overall avg speed of months Nov and Dec.
+                -------------------------------
+                |    Days      |  Avg Speed   |
+                |--------------|--------------|
+                |  31st Dec    |  13.24  mph  |
+                |  25th Dec    |  15.26  mph  |
+                |  Overall Avg |  11.01  mph  |
+                |-----------------------------| 
+  */     
